@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.fft import fft, fftfreq
 
 # Parameters
-duration = 1  # seconds
+duration = 3  # seconds
 sample_rate = 48000  # Hz
 
 # List available audio devices
@@ -45,7 +45,7 @@ N = len(audio_time_data)
 # Create time array
 ts = np.linspace(0, duration, len(audio_time_data))
 fs = fftfreq(N, d=(1/sample_rate))
-#fs = np.linspace(0, 10000, len(audio_time_data))
+#fs = np.linspace(0, 2000, len(audio_time_data))
 
 # Plot the audio data
 plt.figure(figsize=(10, 4))
@@ -71,6 +71,7 @@ plt.plot(fs, audio_freq_data)
 plt.title('Frequency Domain Audio Waveform')
 plt.xlabel('Frequency (Hz)')
 plt.ylabel('Amplitude')
+plt.xlim(0,3000) # for plotting up to 3kHz
 plt.grid(True)
 
 # Add vertical lines every second
