@@ -40,23 +40,41 @@ def estimate_distances(magnitudes):
 # Mic positions are assumed at (0, 0) for mic1, (0, 10) for mic2, (10, 0) for mic3, and (10, 10) for mic4 respectively
 # Updated to increase sensitivity and correctly account for signal attenuation
 ATTENUATION_PER_METER = 6  # Attenuation in dB per meter
-def estimate_position(mic1, mic2, mic3, mic4):
-    if mic1 <= NO_SIGNAL_THRESHOLD and mic2 <= NO_SIGNAL_THRESHOLD and mic3 <= NO_SIGNAL_THRESHOLD and mic4 <= NO_SIGNAL_THRESHOLD:
+def estimate_position(mic1_db, mic2_db, mic3_db, mic4_db):
+    # Check if all signals are below the threshold
+    if mic1_db <= NO_SIGNAL_THRESHOLD and mic2_db <= NO_SIGNAL_THRESHOLD and mic3_db <= NO_SIGNAL_THRESHOLD and mic4_db <= NO_SIGNAL_THRESHOLD:
         return np.array([5, 5])  # Default to midpoint if no signal
 
-    # Estimating distances based on microphone dB values
-    dist_mic1 = 10 ** ((REF_DB - mic1) / ATTENUATION_PER_METER)
-    dist_mic2 = 10 ** ((REF_DB - mic2) / ATTENUATION_PER_METER)
-    dist_mic3 = 10 ** ((REF_DB - mic3) / ATTENUATION_PER_METER)
-    dist_mic4 = 10 ** ((REF_DB - mic4) / ATTENUATION_PER_METER)
+    # Estimate distances based on microphone dB values
+    dist_mic1 = 10 ** ((REF_DB - mic1_db) / ATTENUATION_PER_METER)
+    dist_mic2 = 10 ** ((REF_DB - mic2_db) / ATTENUATION_PER_METER)
+    dist_mic3 = 10 ** ((REF_DB - mic3_db) / ATTENUATION_PER_METER)
+    dist_mic4 = 10 ** ((REF_DB - mic4_db) / ATTENUATION_PER_METER)
 
-    # Simplified position estimation based on relative distances
-    total_distance = dist_mic1 + dist_mic2 + dist_mic3 + dist_mic4
-    if total_distance == 0:
-        return np.array([0, 10])  # Default to corner if no signal
+    # Avoid division by zero
+    epsilon = 1e-10
+    dist_mic1 = max(dist_mic1, epsilon)
+    dist_mic2 = max(dist_mic2, epsilon)
+    dist_mic3 = max(dist_mic3, epsilon)
+    dist_mic4 = max(dist_mic4, epsilon)
 
-    x_position = (dist_mic3 / total_distance) * 10 + (dist_mic4 / total_distance) * 10
-    y_position = (dist_mic2 / total_distance) * 10 + (dist_mic4 / total_distance) * 10
+    # Calculate weights inversely proportional to distances
+    weight_mic1 = 1 / dist_mic1
+    weight_mic2 = 1 / dist_mic2
+    weight_mic3 = 1 / dist_mic3
+    weight_mic4 = 1 / dist_mic4
+
+    total_weight = weight_mic1 + weight_mic2 + weight_mic3 + weight_mic4
+
+    # Microphone positions
+    x_mic1, y_mic1 = 0, 0
+    x_mic2, y_mic2 = 0, 10
+    x_mic3, y_mic3 = 10, 0
+    x_mic4, y_mic4 = 10, 10
+
+    # Calculate weighted average positions
+    x_position = (weight_mic1 * x_mic1 + weight_mic2 * x_mic2 + weight_mic3 * x_mic3 + weight_mic4 * x_mic4) / total_weight
+    y_position = (weight_mic1 * y_mic1 + weight_mic2 * y_mic2 + weight_mic3 * y_mic3 + weight_mic4 * y_mic4) / total_weight
 
     # Constrain the estimated position to be within the bounds of the area
     estimated_position = np.clip([x_position, y_position], 0, 10)
