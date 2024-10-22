@@ -8,14 +8,13 @@ from mpl_toolkits.mplot3d import Axes3D
 # Simulation parameters
 demo_mode = False  # Set to False to capture from multiple microphones
 Fs = 1000  # Sampling frequency (Hz)
-freq_range = (250, 300)  # Frequency range for analysis (in Hz)
-NO_SIGNAL_THRESHOLD = -80  # Threshold in dB to determine if there is no significant signal
+freq_range = (200, 500)  # Frequency range for analysis (in Hz)
+NO_SIGNAL_THRESHOLD = 50  # Threshold in dB to determine if there is no significant signal
 SMOOTHING_FACTOR = 0.8  # Smoothing factor for exponential moving average
 
 # Reference values for distance estimation
-REF_DISTANCE = 1.0  # Reference distance in meters
-REF_DB = 0  # Reference dB at 1 meter
-ATTENUATION_PER_METER = 6  # Attenuation in dB per meter
+REF_DISTANCE = 0.1  # Reference distance in meters (adjust as needed)
+REF_DB = 94  # Reference dB SPL at REF_DISTANCE
 
 # Distance between microphones (variable)
 mic_distance = 10  # Distance between microphones in meters (can be changed)
@@ -39,8 +38,8 @@ def estimate_position(mic_db_values):
     if np.all(mic_db_values <= NO_SIGNAL_THRESHOLD):
         return np.array([mic_distance / 2, mic_distance / 2, 0])  # Default to center if no signal
     
-    # Estimate distances based on microphone dB values
-    distances = 10 ** ((REF_DB - mic_db_values) / ATTENUATION_PER_METER)
+    # Estimate distances based on microphone dB values using the Inverse Square Law
+    distances = REF_DISTANCE * 10 ** ((REF_DB - mic_db_values) / 20)
     
     # Avoid division by zero or negative distances
     distances = np.maximum(distances, 1e-6)
@@ -97,9 +96,13 @@ def estimate_position(mic_db_values):
 # Function to capture real-time microphone input and calculate dB
 def get_real_time_mic_input(channels, device=None):
     duration = 0.2  # Duration in seconds
-    recording = sd.rec(int(duration * Fs), samplerate=Fs, channels=len(channels), dtype='float64', device=device)
-    sd.wait()  # Wait until the recording is finished
-    audio_time_data = recording  # This will be a 2D array with shape (samples, channels)
+    try:
+        recording = sd.rec(int(duration * Fs), samplerate=Fs, channels=len(channels), dtype='float64', device=device)
+        sd.wait()  # Wait until the recording is finished
+        audio_time_data = recording  # This will be a 2D array with shape (samples, channels)
+    except Exception as e:
+        print(f"Error in audio capture: {e}")
+        return [NO_SIGNAL_THRESHOLD] * len(channels)
     
     mic_db_values = []
     for idx, ch in enumerate(channels):
@@ -107,37 +110,52 @@ def get_real_time_mic_input(channels, device=None):
         channel_data = audio_time_data[:, idx]
         # Apply Hamming window
         windowed_data = channel_data * hamming(len(channel_data))
-        # Apply FFT and normalize
-        fft_result = np.abs(fft(windowed_data))[:len(windowed_data) // 2] / len(windowed_data)
+        # Apply FFT
+        fft_result = fft(windowed_data)
+        fft_magnitude = np.abs(fft_result)[:len(windowed_data) // 2]
         freqs = fftfreq(len(windowed_data), d=1/Fs)[:len(windowed_data) // 2]
         # Filter to desired frequency range
         freq_mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1])
-        filtered_fft_result = fft_result[freq_mask]
-        # Get peak value
-        if len(filtered_fft_result) == 0 or np.max(filtered_fft_result) < 1e-6:
+        filtered_fft_magnitude = fft_magnitude[freq_mask]
+        # Compute RMS of the filtered signal
+        if len(filtered_fft_magnitude) == 0:
             mic_db = NO_SIGNAL_THRESHOLD  # No significant signal detected
         else:
-            peak_value = np.max(filtered_fft_result)
-            mic_db = 20 * np.log10(peak_value + 1e-10) + 30  # Convert to dB
+            rms_value = np.sqrt(np.mean(filtered_fft_magnitude**2))
+            # Avoid log of zero
+            rms_value = max(rms_value, 1e-12)
+            # Calculate dB value relative to a reference RMS value
+            mic_db = 20 * np.log10(rms_value / 20e-6)  # Reference value set to 20 µPa (threshold of hearing)
         mic_db_values.append(mic_db)
     return mic_db_values
-
-# Function to simulate mic dB values (for demo mode)
-def simulate_mic_db(drone_position, mic_position):
-    distance = np.linalg.norm(drone_position - mic_position)
-    # Simulate dB value with attenuation
-    mic_db = REF_DB - ATTENUATION_PER_METER * np.log10(distance / REF_DISTANCE)
-    return mic_db
 
 # Placeholder driver function for targeting system
 def targeting_system_driver(position):
     # Currently does nothing
-    # In future, this function will point a camera to the drone based on the position
     pass
 
 # Function to start the live plot
 def start_live_plot():
     input("Press Enter to start calculating position...")
+    
+    # Device selection for multi-channel input
+    print("Available audio devices:")
+    print(sd.query_devices())
+    device_index = int(input("Enter the device index for your microphone input device: "))
+    device_info = sd.query_devices(device_index, 'input')
+    num_input_channels = device_info['max_input_channels']
+    
+    if not demo_mode:
+        if num_input_channels < 4:
+            print(f"Selected device supports only {num_input_channels} input channels. Need at least 4 channels.")
+            return
+        channels = [1, 2, 3, 4]  # Physical channels corresponding to Mics 1-4
+    else:
+        if num_input_channels < 1:
+            print(f"Selected device supports only {num_input_channels} input channels. Need at least 1 channel.")
+            return
+        channels = [1]  # Only one channel in demo mode
+    
     # Live plot setup
     plt.ion()
     fig = plt.figure()
@@ -164,16 +182,6 @@ def start_live_plot():
     
     fig.canvas.mpl_connect('close_event', on_close)
     
-    # Device selection for multi-channel input
-    if not demo_mode:
-        print("Available audio devices:")
-        print(sd.query_devices())
-        device_index = int(input("Enter the device index for your multi-channel audio interface: "))
-        channels = [1, 2, 3, 4]  # Channels to record from
-    else:
-        device_index = None
-        channels = [1]  # Only one channel in demo mode
-    
     # Main loop for live plotting
     t = 0
     running = True
@@ -182,37 +190,28 @@ def start_live_plot():
             t += 0.2  # Update interval
             if demo_mode:
                 # Demo mode: Use real-time input for mic1 and fixed values for other mics
-                mic_db_values = [get_real_time_mic_input([1])[0], -60, -60, -60]
-                estimated_position = estimate_position(mic_db_values)
-                
-                # Apply smoothing
-                smoothed_position = SMOOTHING_FACTOR * smoothed_position + (1 - SMOOTHING_FACTOR) * estimated_position
-                
-                # Print the updated dB values for all mics
-                print(f"Updated dB values: Mic1: {mic_db_values[0]:.2f} dB, Mic2: {mic_db_values[1]:.2f} dB, Mic3: {mic_db_values[2]:.2f} dB, Mic4: {mic_db_values[3]:.2f} dB")
-                
-                # Print the estimated position
-                print(f"Estimated Position - X: {smoothed_position[0]:.2f} m, Y: {smoothed_position[1]:.2f} m, Z: {smoothed_position[2]:.2f} m")
-                
-                # Call the targeting system driver with the estimated position
-                targeting_system_driver(smoothed_position)
+                mic_db_values = get_real_time_mic_input(channels, device=device_index)
+                mic_db_values.extend([NO_SIGNAL_THRESHOLD] * (4 - len(mic_db_values)))  # Fill remaining mics
             else:
                 # Capture real-time input from four microphones
                 mic_db_values = get_real_time_mic_input(channels, device=device_index)
-                estimated_position = estimate_position(mic_db_values)
-                
-                # Apply smoothing
-                smoothed_position = SMOOTHING_FACTOR * smoothed_position + (1 - SMOOTHING_FACTOR) * estimated_position
-                
-                # Print the updated dB values for all mics
-                print(f"Updated dB values: Mic1: {mic_db_values[0]:.2f} dB, Mic2: {mic_db_values[1]:.2f} dB, Mic3: {mic_db_values[2]:.2f} dB, Mic4: {mic_db_values[3]:.2f} dB")
-                
-                # Print the estimated position
-                print(f"Estimated Position - X: {smoothed_position[0]:.2f} m, Y: {smoothed_position[1]:.2f} m, Z: {smoothed_position[2]:.2f} m")
-                
-                # Call the targeting system driver with the estimated position
-                targeting_system_driver(smoothed_position)
-    
+                if len(mic_db_values) < 4:
+                    mic_db_values.extend([NO_SIGNAL_THRESHOLD] * (4 - len(mic_db_values)))
+            
+            estimated_position = estimate_position(mic_db_values)
+            
+            # Apply smoothing
+            smoothed_position = SMOOTHING_FACTOR * smoothed_position + (1 - SMOOTHING_FACTOR) * estimated_position
+            
+            # Print the estimated position
+            print(f"Estimated Position - X: {smoothed_position[0]:.2f} m, Y: {smoothed_position[1]:.2f} m, Z: {smoothed_position[2]:.2f} m")
+            
+            # Print the updated dB values for all mics
+            print(f"Updated dB values: Mic1: {mic_db_values[0]:.2f} dB, Mic2: {mic_db_values[1]:.2f} dB, Mic3: {mic_db_values[2]:.2f} dB, Mic4: {mic_db_values[3]:.2f} dB")
+            
+            # Call the targeting system driver with the estimated position
+            targeting_system_driver(smoothed_position)
+        
             # Update live plot
             sc.set_data(smoothed_position[0], smoothed_position[1])
             sc.set_3d_properties(smoothed_position[2])
